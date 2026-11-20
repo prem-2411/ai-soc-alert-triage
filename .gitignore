@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+*.pyc
+alerts.db
+sample_logs.csv
+data/
+node_modules/
+.env
