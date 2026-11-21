@@ -1,18 +1,19 @@
-# ai-soc-alert-triage
-AI-powered SOC alert triage: rule-based and ML threat detection (Isolation Forest, Random Forest) with a FastAPI backend, severity scoring and MITRE ATT&CK mapping.
+# AI SOC Alert Triage
 
-> **Status:** backend and detection pipeline complete. React dashboard, Docker Compose and real-dataset evaluation are in progress.
+A threat-detection backend that ingests security logs, flags suspicious activity with **rules plus machine learning**, scores each alert by severity, and exposes a REST API so an analyst can triage them.
+
+**Stack:** Python, pandas, scikit-learn, FastAPI, SQLite
 
 ## What it does
 
-1. **Ingests** security logs (CSV) with fields such as timestamp, source IP, destination port, bytes, duration and failed logins.
+1. **Ingests** logs (CSV) with fields such as timestamp, source IP, destination port, bytes, duration and failed logins.
 2. **Aggregates** them into one row per source IP per minute.
-3. **Detects** suspicious activity with two layers:
+3. **Detects** suspicious behaviour in two layers:
    - **Rules:** brute force, port scan, traffic spike
-   - **ML:** an Isolation Forest (unsupervised anomaly score) and a Random Forest (supervised, class-weighted for imbalance)
-4. **Scores** each alert 0-100 by combining the Random Forest probability, the anomaly score and rule hits, then labels it low, medium, high or critical.
+   - **ML:** an Isolation Forest (unsupervised anomaly score) and a class-weighted Random Forest (supervised)
+4. **Scores** every alert 0-100 and labels it low, medium, high or critical.
 5. **Maps** rule hits to MITRE ATT&CK techniques.
-6. **Stores** alerts in SQLite so an analyst can filter them and set a status of open, investigating or closed.
+6. **Stores** alerts in SQLite so they can be filtered and moved through `open`, `investigating` and `closed`.
 
 ## Architecture
 
@@ -28,8 +29,11 @@ flowchart LR
     F --> G
     G --> H[(SQLite alerts)]
     H --> I[FastAPI<br/>/alerts /stats]
-    I --> J[React dashboard<br/>in progress]
 ```
+
+## Why both rules and ML?
+
+Rules are transparent and fast, but an attacker who stays under the thresholds slips past them. The Isolation Forest flags behaviour that is unusual compared with normal traffic, even without a matching rule. The Random Forest learns known attack patterns from labelled data. The severity score combines all three so the analyst sees one ranked queue instead of three separate alert lists.
 
 ## Severity score
 
@@ -37,7 +41,14 @@ flowchart LR
 severity = 100 * (0.5 * RandomForest probability + 0.2 * anomaly score + 0.3 * rule signal)
 ```
 
-Bands: critical >= 80, high >= 60, medium >= 40, low below 40. The weights are a starting point and can be tuned.
+| Band | Score |
+|---|---|
+| Critical | 80 and above |
+| High | 60 to 79 |
+| Medium | 40 to 59 |
+| Low | below 40 |
+
+The weights are a starting point and are easy to tune in `backend/pipeline.py`.
 
 ## Detection rules
 
@@ -47,7 +58,7 @@ Bands: critical >= 80, high >= 60, medium >= 40, low below 40. The weights are a
 | Port scan | 20 or more distinct destination ports | T1046 Network Service Discovery |
 | Traffic spike | 5 MB or more of traffic | T1498 Network Denial of Service |
 
-Thresholds live in `backend/rules.py`.
+Thresholds live in `backend/rules.py` and are covered by unit tests.
 
 ## API
 
@@ -56,7 +67,7 @@ Thresholds live in `backend/rules.py`.
 | POST | `/upload-logs` | Upload a CSV, run detection, store alerts |
 | GET | `/alerts` | List alerts (filter by `severity`, `status`, `src_ip`) |
 | GET | `/alerts/{id}` | Get one alert |
-| PATCH | `/alerts/{id}` | Update status (open, investigating, closed) |
+| PATCH | `/alerts/{id}` | Update status (`open`, `investigating`, `closed`) |
 | GET | `/stats` | Counts by severity and status, top IPs, timeline, model metrics |
 
 Interactive docs are served at `/docs`.
@@ -64,56 +75,38 @@ Interactive docs are served at `/docs`.
 ## Quick start
 
 ```bash
-git clone https://github.com/<your-username>/soc-alert-triage.git
-cd soc-alert-triage
+git clone https://github.com/prem-2411/ai-soc-alert-triage.git
+cd ai-soc-alert-triage
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# model comparison table
+# run the detector comparison
 python run_demo.py
 
-# tests
+# run the tests
 python -m pytest -q tests
 
-# API
+# start the API
 uvicorn backend.main:app --reload
 ```
 
-Generate a sample file and upload it at http://127.0.0.1:8000/docs:
+To try the API, generate a sample file and upload it at <http://127.0.0.1:8000/docs>:
 
 ```bash
 python -c "from backend.synth import generate; generate(seed=7).to_csv('sample_logs.csv', index=False)"
 ```
 
-## Results
+## Result worth noting
 
-### Synthetic data (pipeline check only)
+The synthetic generator injects brute force, port scans, traffic spikes and a slow "stealth scan" that stays below the rule thresholds. On that data the rules alone reached 87.5% recall because they miss the stealth scans, while both ML models caught them. This is the case that motivates combining the two layers.
 
-The generator injects brute force, port scan, traffic spike and a slow "stealth scan" that stays under the rule thresholds. Because the data is synthetic and simple, these numbers only confirm the pipeline works. They are not a benchmark.
-
-| Method | Precision | Recall | False positive rate |
-|---|---|---|---|
-| Rules only | 1.00 | 0.875 | 0.00 |
-| Isolation Forest | 1.00 | 1.00 | 0.00 |
-| Random Forest | 1.00 | 1.00 | 0.00 |
-
-The rules miss the stealth scans, and the ML layer catches them.
-
-### Real dataset (to be filled in)
-
-| Method | Precision | Recall | False positive rate |
-|---|---|---|---|
-| Rules only | TBD | TBD | TBD |
-| Isolation Forest | TBD | TBD | TBD |
-| Random Forest | TBD | TBD | TBD |
-
-Dataset: [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) or [UNSW-NB15](https://research.unsw.edu.au/projects/unsw-nb15-dataset) (link the one you use). Raw data is not stored in this repo.
+The data is synthetic and deliberately simple, so this demonstrates the pipeline and the idea rather than benchmarking real-world performance.
 
 ## Project structure
 
 ```
-soc-alert-triage/
+ai-soc-alert-triage/
 ├── backend/
 │   ├── features.py   # window aggregation
 │   ├── rules.py      # rule detections + MITRE mapping
@@ -127,20 +120,9 @@ soc-alert-triage/
 └── requirements.txt
 ```
 
-## Roadmap
+## Limitations and next steps
 
-- [x] Rule-based detections and unit tests
-- [x] Isolation Forest and Random Forest comparison
-- [x] FastAPI endpoints with SQLite storage
-- [ ] React dashboard (alert table, severity chart, top attacker IPs, timeline)
-- [ ] Evaluation on CIC-IDS2017 or UNSW-NB15
-- [ ] Docker Compose
-- [ ] Screenshots and live demo link
-
-## Screenshots
-
-_Add dashboard screenshots here once the frontend is built._
-
-## Tech stack
-
-Python, pandas, scikit-learn, FastAPI, SQLite, React (planned), Docker (planned)
+- Evaluated on synthetic data only. Next step is benchmarking on a public labelled dataset such as CIC-IDS2017 or UNSW-NB15, with attention to class imbalance and false positive rate.
+- Severity weights and rule thresholds are hand-set, not learned.
+- Alerting is per source IP per minute, so it does not yet track behaviour across sessions or hosts over time.
+- Triage is currently through the API; a web dashboard is a natural next step.
